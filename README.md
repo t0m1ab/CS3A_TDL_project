@@ -5,8 +5,8 @@
 
 ### Results
 
-![Figure (1)](figures/figure_1.png "Figure (1)")
+<img src="figures/figure_1.png" alt="fig1" width="500" position/>
 
-![Figure (2a)](figures/figure_2a.png "Figure (2a)")
+<img src="figures/figure_2a.png" alt="fig2a" width="500" position/>
 
-![Figure (2b)](figures/figure_2b.png "Figure (2b)")
+<img src="figures/figure_2b.png" alt="fig2b" width="500" position/>
