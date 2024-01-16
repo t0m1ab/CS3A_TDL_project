@@ -9,10 +9,12 @@ from collections import defaultdict
 from pathlib import Path
 from tqdm import tqdm
 
+COLORS = sns.color_palette()
+
 
 class Data():
     """
-    Data structure to store data from multiple forward passes of the MLP with cosine similarity recorded.
+    Data structure to store data from multiple forward passes of a single MLP with fixed length and width.
     """
 
     def __init__(self, d: int = None, l: int = None, save_dir: str = None):
@@ -174,17 +176,20 @@ class BN(nn.Module):
     Custom Batch Normalization layer as defined in the article.
     """
 
-    def __init__(self, input_dim: int):
+    def __init__(self, input_dim: int, device: str = None):
         super().__init__()
         self.input_dim = input_dim
+        self.device = device if device is not None else "cpu"
 
     def forward(self, x):
         """ x is equal to M.T defined in the article, be careful... """
-        diag = torch.eye(self.input_dim) * (1 / torch.sqrt(torch.diag(x.t() @ x).reshape(-1, 1)))
+        diag = torch.eye(self.input_dim, device=self.device) * (1 / torch.sqrt(torch.diag(x.t() @ x).reshape(-1, 1)))
         return x @ diag.t()
 
 
 class MLP(nn.Module):
+
+    LAYERS_SELECTION = ["all", "first", "last", "first_last"]
 
     ACTIVATIONS = {
         "relu": nn.ReLU,
@@ -192,35 +197,94 @@ class MLP(nn.Module):
         "tanh": nn.Tanh,
     }
 
-    def __init__(self, d: int, l: int, bn: bool = False, bias: bool = False, activation: str = None):
+    INIT_METHODS = ["xavier", "normal"]
+
+    def __init__(
+            self, 
+            d: int, 
+            l: int, 
+            in_dim: int = None, 
+            out_dim: int = None, 
+            bn: bool = False, 
+            bias: bool = False, 
+            act: str = None,
+            init_method: str = None,
+            device: str = None,
+        ):
         """ 
         ARGUMENTS:
-            d: input dimension = hidden dimension = output dimension
-            l: number layers
-            bn: batch normalization
-            activation: activation function in [None,"relu","sigmoid","tanh"]
+            - in_dim: input dimension
+            - out_dim: output dimension
+            - d: input dimension = hidden dimension = output dimension
+            - l: number layers
+            - in_dim: input dimension of the network (set to d if None)
+            - out_dim: output dimension of the network (set to d if None)
+            - bn: batch normalization
+            - bias: if true then add bias to linear layers
+            - act: act function in [None, "relu", "sigmoid", "tanh"]
+            - init_method: weight initialization method in MLP.INIT_METHODS
+            - device: device to use for computations in ["cpu", "mps", "cuda"]
         """
         super(MLP, self).__init__()
 
+        if d < 1:
+            raise ValueError(f"d={d} must be striclty positive")
+        if l < 1:
+            raise ValueError(f"d={l} must be striclty positive")
         self.d = d
         self.l = l
+        self.input_dim = in_dim if in_dim is not None else d
+        self.output_dim = out_dim if out_dim is not None else d
         self.bn = bn
         self.bias = bias
-        self.activation = None
-        if activation is not None:
-            activation = activation.lower()
-            self.activation = activation if activation in self.ACTIVATIONS else None
+        self.act = None
+        if act is not None:
+            act = act.lower()
+            self.act = act if act in self.ACTIVATIONS else None
+        self.init_method = init_method if init_method in MLP.INIT_METHODS else MLP.INIT_METHODS[0]
+        device = "cpu" if (device is None) or (not device in ["cpu", "mps", "cuda"]) else device
+        if device == "mps":
+            if not torch.backends.mps.is_available():
+                if not torch.backends.mps.is_built():
+                    print("MPS not available because the current PyTorch install was not built with MPS enabled.")
+                else:
+                    print("MPS not available because the current MacOS version is not 12.3+ and/or you do not have an MPS-enabled device on this machine.")
+        self.device = torch.device(device)
 
-        self.linear_layers = [nn.Linear(self.d, self.d, bias=self.bias) for _ in range(self.l)]
-        for lin_layer in self.linear_layers: # init with i.i.d gaussian weights 
-            torch.nn.init.normal_(lin_layer.weight, mean=0, std=1.0/np.sqrt(self.d))
+        # define linear layers: input_dim -> hidden_dim -> ...[l times]... -> hidden_dim -> output_dim
+        self.flatten = nn.Flatten()
+        self.input_layer = nn.Linear(self.input_dim, self.d, bias=self.bias, device=self.device)
+        self.hidden_layers = nn.ModuleList([nn.Linear(self.d, self.d, bias=self.bias, device=self.device) for _ in range(self.l)])
+        self.output_layer = nn.Linear(self.d, self.output_dim, bias=self.bias, device=self.device)
 
-        self.activations = [self.ACTIVATIONS[self.activation]() for _ in range(l)] if self.activation is not None else None
+        # init layers weights
+        self.__init_layer(self.input_layer.weight)
+        self.__init_layer(self.output_layer.weight)
+        for layer in self.hidden_layers: # init with i.i.d gaussian weights 
+            self.__init_layer(layer.weight)
+
+        # only applied after hidden layers
+        self.activations = nn.ModuleList([self.ACTIVATIONS[self.act]() for _ in range(l)]) if self.act is not None else None
         
-        self.bn_layers = [BN(self.d) for _ in range(self.l)]
+        # only applied after hidden layers
+        self.bn_layers = nn.ModuleList([BN(self.d, device=self.device) for _ in range(self.l)])
 
         self.data = defaultdict(list)
     
+    def print_infos(self):
+        print(f"### MLP[d={self.d}, l={self.l}, bn={self.bn}, bias={self.bias}, act={self.act}]")
+        for idx, (name, layer) in enumerate(self.named_parameters()):
+            print(f"{idx} - {name} | shape = {tuple(layer.size())}")
+        print("")
+    
+    def __init_layer(self, weight: nn.Module):
+        if self.init_method == "normal":
+            torch.nn.init.normal_(weight, mean=0, std=1.0/np.sqrt(self.d))
+        elif self.init_method == "xavier":
+            torch.nn.init.xavier_uniform_(weight, gain=torch.nn.init.calculate_gain("relu"))
+        else:
+            print(f"WARNING: init method '{self.init_method}' not recognized, no specific initialization was performed...")
+
     def __cosine_similarity(self, x: torch.Tensor) -> float:
         """
         ARGUMENTS:
@@ -238,8 +302,21 @@ class MLP(nn.Module):
             x: input tensor of shape (batch_size, d) is equal to H.T defined in the article, be careful...
         """
         batch_size = x.shape[0]
-        gap = (x @ x.t())/(torch.norm(x).item()**2) - torch.eye(batch_size)/batch_size
+        gap = (x @ x.t())/(torch.norm(x).item()**2) - torch.eye(batch_size, device=self.device)/batch_size
         return torch.norm(gap).item()
+
+    def __layer_check(self, layer_idx: int, l: int, select_layers: str):
+        """ Check if layer_idx is of select_layers type according to the depth of the network l. """
+        if select_layers == "all":
+            return True
+        elif select_layers == "first":
+            return layer_idx == 0
+        elif select_layers == "last":
+            return layer_idx == l
+        elif select_layers == "first_last":
+            return (layer_idx == 0) or (layer_idx == l)
+        else:
+            raise ValueError(f"select_layers must be in {self.LAYERS_SELECTION} but is {select_layers}")
 
     def forward(
             self, 
@@ -247,22 +324,35 @@ class MLP(nn.Module):
             bn: bool = None, 
             return_similarity: bool = False, 
             return_orth_gap: bool = False,
-        ) -> torch.Tensor | Data:
+            select_layers: str = None,
+        ) -> tuple[torch.Tensor, Data]:
         """
         ARGUMENTS:
             x: input tensor of shape (batch_size, d) is equal to H.T defined in the article, be careful...
             bn: batch normalization
-            return_similarity: if True then record and return the cosine similarity between the first pair of sample in the batch x at each layer
-            return_orth_gap: if True then record and return the orthogonality gap at each layer
+            return_similarity: if True then record and return the cosine similarity between the first pair of sample in the batch x at each layer matching select_layers
+            return_orth_gap: if True then record and return the orthogonality gap at each layer matching select_layers
+            select_layers: one of MLP.LAYERS_SELECTION
         """
 
         if bn is None:
             bn = self.bn
+
+        return_data = return_similarity or return_orth_gap
+        select_layers = select_layers if select_layers is not None else "all"
+        if not select_layers in self.LAYERS_SELECTION:
+            raise ValueError(f"select_layers must be in {self.LAYERS_SELECTION} but is {select_layers}")
+
+        data = Data(d=self.d, l=self.l)
         
-        return_metrics = return_similarity or return_orth_gap
+        # flatten input (do nothing if input is already a batch of vectors (2D tensor))
+        x = self.flatten(x)
         
-        if return_metrics:
-            data = Data(d=self.d, l=self.l)
+        # input layer
+        if self.input_dim != self.d:
+            x = self.input_layer(x)
+
+        if return_data and self.__layer_check(0, self.l, select_layers):
             data.add_values(
                 network_type="BN" if bn else "Vanilla", 
                 layer_idx=0, 
@@ -270,17 +360,18 @@ class MLP(nn.Module):
                 orth_gap=self.__orthogonality_gap(x) if return_orth_gap else None,
             )
 
+        # hidden layers
         for layer_idx in range(self.l):
 
-            x = self.linear_layers[layer_idx](x)
+            x = self.hidden_layers[layer_idx](x)
     
-            if self.activation is not None:
+            if self.act is not None:
                 x = self.activations[layer_idx](x)
 
             if bn:
                 x = self.bn_layers[layer_idx](x) / np.sqrt(self.d)
         
-            if return_metrics:
+            if return_data and self.__layer_check(layer_idx+1, self.l, select_layers):
                 data.add_values(
                     network_type="BN" if bn else "Vanilla", 
                     layer_idx=layer_idx+1, 
@@ -288,13 +379,14 @@ class MLP(nn.Module):
                     orth_gap=self.__orthogonality_gap(x) if return_orth_gap else None,
                 )
         
-        if return_metrics:
-            return data
-        else:
-            return x
+        # output layer
+        if self.output_dim != self.d:
+            x = self.output_layer(x)
+        
+        return x, data
 
 
-def create_orth_vectors(d: int, n: int) -> torch.Tensor:
+def create_orth_vectors(d: int, n: int, device: str = None) -> torch.Tensor:
     """
     ARGUMENTS:
         d: dimension of the vectors
@@ -304,14 +396,16 @@ def create_orth_vectors(d: int, n: int) -> torch.Tensor:
     """
     if n > d:
         raise ValueError(f"n={n} must be smaller than d={d}")
-    
+        
     orth_mat = ortho_group.rvs(dim=d)
     rand_indexes = np.random.choice(d, size=n, replace=False)
 
-    return torch.tensor(orth_mat[rand_indexes, :], dtype=torch.float32)
+    orth_vectors = torch.tensor(orth_mat[rand_indexes, :], dtype=torch.float32, device=device)
+
+    return orth_vectors.to("cpu" if (device is None) or (not device in ["cpu", "mps", "cuda"]) else device)
 
 
-def create_correlated_vectors(d: int, n: int, eps: float = 0.001) -> torch.Tensor:
+def create_correlated_vectors(d: int, n: int, eps: float = 0.001, device: str = None) -> torch.Tensor:
     """
     ARGUMENTS:
         d: dimension of the vectors
@@ -322,15 +416,16 @@ def create_correlated_vectors(d: int, n: int, eps: float = 0.001) -> torch.Tenso
     """
     if n > d:
         raise ValueError(f"n={n} must be smaller than d={d}")
-    
+        
     x = torch.zeros((n, d))
     x[:,0] = 1
     for i in range(1, n):
         x[i,i] = eps
-    return x
+    
+    return x.to("cpu" if (device is None) or (not device in ["cpu", "mps", "cuda"]) else device)
 
 
-def plots_figure_1(n_runs: int = 20):
+def plots_figure_1(n_runs: int = 20, device: str = None):
     """
     Figure 1: Orthogonality: BN vs. Vanilla networks
     """
@@ -339,30 +434,36 @@ def plots_figure_1(n_runs: int = 20):
     l = 50
     eps = 0.001
 
+    device = "cpu" if (device is None) or (not device in ["cpu", "mps", "cuda"]) else device
+
+    print(device)
+
     data_cluster = []
 
     for _ in tqdm(range(n_runs), desc=f"Cosine similarity stats over {n_runs} runs"):
 
-        mlp = MLP(d=d, l=l, activation=None)
+        mlp = MLP(d=d, l=l, act=None, device=device)
 
         # Vanilla
-        xVanilla = create_orth_vectors(d=d, n=2)
-        data_cluster.append(mlp(xVanilla, return_similarity=True, return_orth_gap=True, bn=False))
+        xVanilla = create_orth_vectors(d=d, n=2, device=device)
+        data_cluster.append(mlp(xVanilla, return_similarity=True, return_orth_gap=True, bn=False)[1])
 
         # BN
-        xBN = create_correlated_vectors(d=d, n=2, eps=eps)
-        data_cluster.append(mlp(xBN, return_similarity=True, return_orth_gap=True, bn=True))
+        xBN = create_correlated_vectors(d=d, n=2, eps=eps, device=device)
+        data_cluster.append(mlp(xBN, return_similarity=True, return_orth_gap=True, bn=True)[1])
     
+    # merge data from different runs
     merged_data = defaultdict(list)
     for data in data_cluster:
         for key, values in data.to_dict().items():
             merged_data[key].extend(values)
     
+    # use the plot methods of Data class to plot the results
     Data(d=d, l=l).plot_similarity_accross_layers(data_dict=merged_data)
     # Data(d=d, l=l).plot_orth_gap_accross_layers(clusters="type", data_dict=merged_data, filename="figure_2a_Vanilla_vs_BN.png")
 
 
-def plots_figure_2a(n_runs: int = 20):
+def plots_figure_2a(n_runs: int = 20, device: str = None):
     """
     Figure 2a: Orthogonality gap vs. depth
     """
@@ -370,32 +471,38 @@ def plots_figure_2a(n_runs: int = 20):
     l = 50
     batch_size = 4
 
+    device = "cpu" if (device is None) or (not device in ["cpu", "mps", "cuda"]) else device
+
     data_cluster = []
 
     for _ in tqdm(range(n_runs), desc=f"Orthogonality gap vs. network depth stats over {n_runs} runs"):
         
         for d in [32, 512]:
 
-            mlp = MLP(d=d, l=l, activation=None)
+            mlp = MLP(d=d, l=l, act=None, device=device)
 
-            xBN = create_correlated_vectors(d=d, n=batch_size, eps=0.001)
-            data_cluster.append(mlp(xBN, return_orth_gap=True, bn=True))
+            xBN = create_correlated_vectors(d=d, n=batch_size, eps=0.001, device=device)
+            data_cluster.append(mlp(xBN, return_orth_gap=True, bn=True)[1])
 
+    # merge data from different runs
     merged_data = defaultdict(list)
     for data in data_cluster:
         for key, values in data.to_dict().items():
             merged_data[key].extend(values)
     
+    # use the plot methods of Data class to plot the results
     Data().plot_orth_gap_accross_layers(clusters="d", data_dict=merged_data)
 
 
-def plots_figure_2b(n_runs: int = 20):
+def plots_figure_2b(n_runs: int = 20, device: str = None):
     """
     Figure 2b: Orthogonality gap vs. width
     """
 
     l = 500
     batch_size = 4
+
+    device = "cpu" if (device is None) or (not device in ["cpu", "mps", "cuda"]) else device
 
     merged_data = defaultdict(list)
 
@@ -405,11 +512,12 @@ def plots_figure_2b(n_runs: int = 20):
 
         for d in [16, 32, 64, 128, 256, 512]:
 
-            mlp = MLP(d=d, l=l, activation=None)
+            mlp = MLP(d=d, l=l, act=None, device=device)
 
-            xBN = create_correlated_vectors(d=d, n=batch_size, eps=0.001)
-            data_dicts.append(mlp(xBN, return_orth_gap=True, bn=True).to_dict())
+            xBN = create_correlated_vectors(d=d, n=batch_size, eps=0.001, device=device)
+            data_dicts.append(mlp(xBN, return_orth_gap=True, bn=True)[1].to_dict())
         
+        # compute log average of orthogonality gap accross layers and the slope wrt log width
         log_avg_orth_gap = [np.log(np.mean(data["orthogonality_gap"][1:])) for data in data_dicts]
         log_d = [np.log(data["d"][0]) for data in data_dicts]
         slope = linregress(x=log_d, y=log_avg_orth_gap).slope
@@ -418,11 +526,13 @@ def plots_figure_2b(n_runs: int = 20):
         merged_data["log_d"].extend(log_d)
         merged_data["slope"].append(slope)
     
+    # use the plot methods of Data class to plot the results
     Data().plot_orth_radius_vs_width(data_dict=merged_data)
 
 
 if __name__ == "__main__":
 
-    plots_figure_1()
-    plots_figure_2a()
-    plots_figure_2b()
+    device = "cpu"
+    plots_figure_1(device=device)
+    plots_figure_2a(device=device)
+    plots_figure_2b(device=device)

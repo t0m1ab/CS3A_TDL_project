@@ -4,3 +4,5 @@
 *.pdf
 sandbox.ipynb
 outputs/
+data/
+trash.py
