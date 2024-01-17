@@ -49,6 +49,23 @@ class DatasetCIFAR10(Dataset):
             shuffle=self.shuffle,
         )
     
+    def sample_random_batch(self, batch_size: int = None):
+        """ Sample a random batch of size batch_size from the dataset. """
+
+        if batch_size is None: # sample a batch of size self.batch_size
+            for batch, _ in self.train_dataloader:
+                return batch
+
+        c = 0
+        samples = []
+        for batch, _ in self.train_dataloader:
+            samples.append(batch)
+            c += batch.shape[0]
+            if c >= batch_size:
+                break
+        
+        return torch.cat(samples, dim=0)[:batch_size]
+    
     def print_infos(self):
         print(f"### Dataset CIFAR10 train split")
         print(f"- Dataset shape: {self.train_dataloader.dataset.data.shape}")
@@ -140,6 +157,7 @@ def train_MLP_CIFAR10(
         batch_size: int = 500,
         epochs: int = 50,
         step_size: float = 0.01,
+        init_method: str = None,
         compute_orth_gap: bool = True,
         device: str = None,
         plot_figures: bool = True,
@@ -166,6 +184,11 @@ def train_MLP_CIFAR10(
     dataset = DatasetCIFAR10(batch_size=batch_size, drop_last=True, shuffle=True)
     dataset.print_infos()
 
+    init_method = "xavier" if init_method is None else init_method
+    init_batch = None
+    if init_method == "orthogonal": # sample n=3d samples from the dataset as initialization batch
+        init_batch = dataset.sample_random_batch(batch_size=3*hidden_dim).to(device)
+
     mlp = MLP(
         d=hidden_dim, 
         l=depth,
@@ -174,7 +197,8 @@ def train_MLP_CIFAR10(
         bn=False, 
         bias=False, 
         act="ReLU",
-        init_method="xavier",
+        init_method=init_method,
+        init_batch=init_batch,
         device=device,
     )
     mlp.print_infos()
@@ -207,23 +231,25 @@ def train_MLP_CIFAR10(
             loss = criterion(outputs, labels.to(device))
             
             loss.backward()
+
             optimizer.step()
 
             losses_steps.append(loss.cpu().item())
         
-        print(f"Epoch {epoch+1}/{epochs} | Loss = {loss.item():.4f} [{time()-start_time:.2f}s]")
-
         # scheduler.step() # reduce the learning rate
         
         # compute loss and orthogonality gap over the whole dataset
         with torch.no_grad():
             losses_epochs.append(0)
-            for inputs, labels in tqdm(dataset.train_dataloader, desc=f"Compute loss" + " and orthogonality gap" if compute_orth_gap else ""):
+            tqdm_desc = "Compute loss and orthogonality gap" if compute_orth_gap else "Compute loss"
+            for inputs, labels in tqdm(dataset.train_dataloader, desc=tqdm_desc):
                 outputs, batch_data = mlp(inputs.to(device), return_orth_gap=compute_orth_gap, select_layers="last")
                 losses_epochs[-1] += batch_size * criterion(outputs, labels.to(device)).cpu().item()
                 if compute_orth_gap: # only save the orthogonality gap at the last layer (that's why [-1])
                     epochs_data[epoch+1].append(batch_data.orth_gaps[-1])
             losses_epochs[-1] /= len(dataset)
+        
+        print(f"Epoch {epoch+1}/{epochs} | Loss = {losses_epochs[-1]:.4f} [{time()-start_time:.2f}s]")
     
     if plot_figures: # plot losses
         plot_losses(
@@ -345,17 +371,106 @@ def plot_figure_3b(filepath: str = None, save_dir: str = None):
     plt.close()
 
 
+def plot_figure_4(
+        directories_1: list[str] = None, 
+        directories_2: list[str] = None, 
+        label_1: str = None,
+        label_2: str = None,
+        save_dir: str = None,
+    ):
+    """
+    ARGUMENTS:
+        - directories_1: list of directories where to find the training data json file for each MLP of type 1
+        - directories_2: list of directories where to find the training data json file for each MLP of type 2
+        - label_1: label for the MLP of type 1
+        - label_2: label for the MLP of type 2
+        - save_dir: directory to save the figure
+    """
+
+    if len(directories_1) != len(directories_2):
+        raise ValueError(f"Number of directories for MLP of type 1 and MLP of type 2 must be the same")
+
+    # load data from directories in directories_1 and directories_2
+    data_list_1 = []
+    data_list_2 = []
+    for dirname1, dirname2 in zip(directories_1, directories_2):
+        filepath1 = os.path.join(dirname1, "training_data.json")
+        filepath2 = os.path.join(dirname2, "training_data.json")
+        if not os.path.exists(filepath1):
+            raise ValueError(f"File '{filepath1}' not found")
+        if not os.path.exists(filepath2):
+            raise ValueError(f"File '{filepath2}' not found")
+        with open(filepath1, "r") as f:
+            data_list_1.append(json.load(f))
+        with open(filepath2, "r") as f:
+            data_list_2.append(json.load(f))
+
+    # define data to plot
+    epochs = None
+    depths = []
+    end_loss_per_depth_1 = []
+    end_loss_per_depth_2 = []
+    for data1, data2 in zip(data_list_1, data_list_2):
+        if epochs is not None and epochs != data1["epochs"]:
+            raise ValueError(f"Epochs mismatch for different trainings: {epochs} != {data1['epochs']}")
+        if epochs is not None and epochs != data2["epochs"]:
+            raise ValueError(f"Epochs mismatch for different trainings: {epochs} != {data2['epochs']}")
+        epochs = data1["epochs"]
+        depths.append(data1["depth"])
+        end_loss_per_depth_1.append(data1["losses_epochs"][-1])
+        end_loss_per_depth_2.append(data2["losses_epochs"][-1])
+
+    # plot figure
+    plt.plot(depths, end_loss_per_depth_1, color=COLORS[0], marker="o", linewidth=1, label=label_1)
+    plt.plot(depths, end_loss_per_depth_2, color=COLORS[1], marker="o", linewidth=1, label=label_2)
+    plt.xlabel("depth")
+    plt.ylabel(f"training loss after {epochs} epochs")
+    plt.legend(loc="upper left")
+    plt.title(f"Final loss for MLP with different depths and init methods")
+
+    # save figure
+    save_dir = save_dir if save_dir is not None else "outputs/"
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+    plt.savefig(os.path.join(save_dir, "figure_4.png"))
+    plt.close()
+
+
 if __name__ == '__main__':
 
     DEVICE = "mps"
+    depths = [15, 30, 45, 60, 75]
 
-    # reproduce figure 3a
-    directories = []
-    for depth in [15, 30, 45, 60, 75]:
-        directories.append(f"outputs/training_figure_3a_depth={depth}/")
-        train_MLP_CIFAR10(epochs=30, depth=depth, device=DEVICE, save_dir=directories[-1])
-    plot_figure_3a(directories=directories, save_dir="outputs/")
+    # # reproduce figure 3a
+    for depth in depths:
+        train_MLP_CIFAR10(
+            epochs=30, 
+            depth=depth, 
+            device=DEVICE, 
+            save_dir=f"outputs/training_figure_3a_depth={depth}/"
+        )
+    plot_figure_3a(
+        directories=[f"outputs/training_figure_3a_depth={depth}/" for depth in depths],
+        save_dir="outputs/"
+    )
 
-    # reproduce figure 3b
+    # # reproduce figure 3b
     train_MLP_CIFAR10(device=DEVICE, save_dir="outputs/training_figure_3b/")
     plot_figure_3b(filepath="outputs/training_figure_3b/training_data.json")
+
+    # reproduce figure 4
+    for depth in depths:
+        train_MLP_CIFAR10(
+            epochs=30, 
+            depth=depth, 
+            init_method="orthogonal",
+            compute_orth_gap=False,
+            device=DEVICE,  
+            save_dir=f"outputs/training_figure_4_depth={depth}/"
+        )
+    plot_figure_4(
+        directories_1=[f"outputs/training_figure_3a_depth={depth}/" for depth in depths],
+        directories_2=[f"outputs/training_figure_4_depth={depth}/" for depth in depths],
+        label_1="xavier",
+        label_2="orthogonal",
+        save_dir="outputs/"
+    )
