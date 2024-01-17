@@ -532,7 +532,7 @@ def plots_figure_2b(n_runs: int = 20, device: str = None):
 
 if __name__ == "__main__":
 
-    device = "cpu"
-    plots_figure_1(device=device)
-    plots_figure_2a(device=device)
-    plots_figure_2b(device=device)
+    DEVICE = "cpu"
+    plots_figure_1(device=DEVICE)
+    plots_figure_2a(device=DEVICE)
+    plots_figure_2b(device=DEVICE)
