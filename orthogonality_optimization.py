@@ -248,7 +248,7 @@ def train_MLP_CIFAR10(
         )
 
 
-def plot_figure_4a(directories: list[str] = None, save_dir: str = None):
+def plot_figure_3a(directories: list[str] = None, save_dir: str = None):
     """
     ARGUMENTS:
         - directories: list of directories where to find the training data json file for each MLP
@@ -264,42 +264,43 @@ def plot_figure_4a(directories: list[str] = None, save_dir: str = None):
         with open(filepath, "r") as f:
             data_list.append(json.load(f))
 
-    ### TODO: plot figure 4a
-
     # define data to plot
-    # epochs = data["epochs"]
-    # hidden_dim = data["hidden_dim"]
-    # depth = data["depth"]
-    # epochs_idx = [i for i in range(epochs)]
-    # losses_epochs = data["losses_epochs"]
-    # orth_gap_per_epoch = []
-    # for epoch_idx in range(1, epochs+1):
-    #     if not str(epoch_idx) in data["orthogonality_gap"]:
-    #         raise ValueError(f"Orthogonality gap data for epoch {epoch_idx} not found in '{filepath}'")
-    #     orth_gap_per_epoch.append(np.mean(data["orthogonality_gap"][str(epoch_idx)]))
+    epochs = None
+    depths = []
+    end_loss_per_depth = []
+    orth_gap_per_depth = []
+    for data in data_list:
+        if epochs is not None and epochs != data["epochs"]:
+            raise ValueError(f"Epochs mismatch for different trainings: {epochs} != {data['epochs']}")
+        epochs = data["epochs"]
+        depths.append(data["depth"])
+        end_loss_per_depth.append(data["losses_epochs"][-1])
+        if not "0" in data["orthogonality_gap"]:
+            raise ValueError(f"Orthogonality gap data at initialization not found for training with depth {depths[-1]}")
+        orth_gap_per_depth.append(np.mean(data["orthogonality_gap"]["0"]))
 
     # plot figure
-    # fig, ax_left = plt.subplots()
-    # ax_right = ax_left.twinx()
-    # ax_left.plot(epochs_idx, orth_gap_per_epoch, color=COLORS[0], marker="o", linewidth=1, label="orthogonality gap")
-    # ax_left.set_ylabel("orthogonality gap")
-    # ax_right.plot(epochs_idx, losses_epochs, color=COLORS[1], marker="o", linewidth=1, label="loss")
-    # ax_right.set_ylabel("loss")
-    # lines1, labels1 = ax_left.get_legend_handles_labels()
-    # lines2, labels2 = ax_right.get_legend_handles_labels()
-    # ax_left.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
-    # ax_left.set_title(f"Gap and loss during training MLP[depth={depth},width={hidden_dim}]")
-    # ax_left.set_xlabel("epochs")
-    # fig.tight_layout()
+    fig, ax_left = plt.subplots()
+    ax_right = ax_left.twinx()
+    ax_left.plot(depths, orth_gap_per_depth, color=COLORS[0], marker="o", linewidth=1, label="orthogonality gap")
+    ax_left.set_ylabel("orthogonality gap")
+    ax_right.plot(depths, end_loss_per_depth, color=COLORS[1], marker="o", linewidth=1, label="loss")
+    ax_right.set_ylabel(f"training loss after {epochs} epochs")
+    lines1, labels1 = ax_left.get_legend_handles_labels()
+    lines2, labels2 = ax_right.get_legend_handles_labels()
+    ax_left.legend(lines1 + lines2, labels1 + labels2, loc="lower right")
+    ax_left.set_title(f"Initial gap and final loss for MLP with different depths")
+    ax_left.set_xlabel("depth")
+    fig.tight_layout()
 
     # save figure
-    # save_dir = save_dir if save_dir is not None else "outputs/"
-    # Path(save_dir).mkdir(parents=True, exist_ok=True)
-    # plt.savefig(os.path.join(save_dir, "figure_4a.png"))
-    # plt.close()
+    save_dir = save_dir if save_dir is not None else "outputs/"
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+    plt.savefig(os.path.join(save_dir, "figure_3a.png"))
+    plt.close()
 
 
-def plot_figure_4b(filepath: str = None, save_dir: str = None):
+def plot_figure_3b(filepath: str = None, save_dir: str = None):
     """
     ARGUMENTS:
         - filepath: name of the json file containing the training data (loss + orthogonality_gap at each epoch)
@@ -340,7 +341,7 @@ def plot_figure_4b(filepath: str = None, save_dir: str = None):
     # save figure
     save_dir = save_dir if save_dir is not None else "outputs/"
     Path(save_dir).mkdir(parents=True, exist_ok=True)
-    plt.savefig(os.path.join(save_dir, "figure_4b.png"))
+    plt.savefig(os.path.join(save_dir, "figure_3b.png"))
     plt.close()
 
 
@@ -348,13 +349,13 @@ if __name__ == '__main__':
 
     DEVICE = "mps"
 
-    # reproduce figure 4a
+    # reproduce figure 3a
     directories = []
     for depth in [15, 30, 45, 60, 75]:
-        directories.append(f"outputs/training_figure_4a_depth={depth}/")
+        directories.append(f"outputs/training_figure_3a_depth={depth}/")
         train_MLP_CIFAR10(epochs=30, depth=depth, device=DEVICE, save_dir=directories[-1])
-    plot_figure_4a(directories=directories, save_dir="outputs/")
+    plot_figure_3a(directories=directories, save_dir="outputs/")
 
-    # reproduce figure 4b
-    train_MLP_CIFAR10(epochs=2, device=DEVICE, save_dir="outputs/training_figure_4b/")
-    plot_figure_4b(filepath="outputs/training_figure_4b/training_data.json")
+    # reproduce figure 3b
+    train_MLP_CIFAR10(device=DEVICE, save_dir="outputs/training_figure_3b/")
+    plot_figure_3b(filepath="outputs/training_figure_3b/training_data.json")
