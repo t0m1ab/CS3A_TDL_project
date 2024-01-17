@@ -183,8 +183,18 @@ class BN(nn.Module):
 
     def forward(self, x):
         """ x is equal to M.T defined in the article, be careful... """
-        diag = torch.eye(self.input_dim, device=self.device) * (1 / torch.sqrt(torch.diag(x.t() @ x).reshape(-1, 1)))
+        u = torch.diag(x.t() @ x).reshape(-1, 1) + 1e-6 # add 1e-6 to avoid division by 0
+        diag = torch.eye(self.input_dim, device=self.device) * torch.pow(u, -0.5)
         return x @ diag.t()
+
+
+class sin_act(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return torch.sin(x)
 
 
 class MLP(nn.Module):
@@ -195,6 +205,7 @@ class MLP(nn.Module):
         "relu": nn.ReLU,
         "sigmoid": nn.Sigmoid,
         "tanh": nn.Tanh,
+        "sin": sin_act,
     }
 
     INIT_METHODS = ["xavier", "normal", "orthogonal"]
@@ -543,7 +554,7 @@ def plots_figure_2a(n_runs: int = 20, device: str = None):
     Data().plot_orth_gap_accross_layers(clusters="d", data_dict=merged_data)
 
 
-def plots_figure_2b(n_runs: int = 20, device: str = None):
+def plots_figure_2b(n_runs: int = 20, act: str = None, device: str = None):
     """
     Figure 2b: Orthogonality gap vs. width
     """
@@ -555,13 +566,13 @@ def plots_figure_2b(n_runs: int = 20, device: str = None):
 
     merged_data = defaultdict(list)
 
-    for _ in tqdm(range(n_runs), desc=f"Orthogonality gap vs. network width stats over {n_runs} runs"):
+    for _ in tqdm(range(n_runs), desc=f"Orthogonality gap vs. network width stats over {n_runs} runs (act={act})"):
 
         data_dicts = []
 
         for d in [16, 32, 64, 128, 256, 512]:
 
-            mlp = MLP(d=d, l=l, act=None, device=device)
+            mlp = MLP(d=d, l=l, act=act, device=device)
 
             xBN = create_correlated_vectors(d=d, n=batch_size, eps=0.001, device=device)
             data_dicts.append(mlp(xBN, return_orth_gap=True, bn=True)[1].to_dict())
@@ -576,7 +587,8 @@ def plots_figure_2b(n_runs: int = 20, device: str = None):
         merged_data["slope"].append(slope)
     
     # use the plot methods of Data class to plot the results
-    Data().plot_orth_radius_vs_width(data_dict=merged_data)
+    filename = f"figure_2b_{act}.png" if act is not None else "figure_2b.png"
+    Data().plot_orth_radius_vs_width(data_dict=merged_data, filename=filename)
 
 
 if __name__ == "__main__":
@@ -585,3 +597,7 @@ if __name__ == "__main__":
     plots_figure_1(device=DEVICE)
     plots_figure_2a(device=DEVICE)
     plots_figure_2b(device=DEVICE)
+    plots_figure_2b(device=DEVICE, act="relu")
+    plots_figure_2b(device=DEVICE, act="tanh")
+    plots_figure_2b(device=DEVICE, act="sigmoid")
+    plots_figure_2b(device=DEVICE, act="sin")
