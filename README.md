@@ -24,3 +24,7 @@
 <img src="figures/figure_3b.png" alt="fig2b" width="500" position/>
 
 *Reproduction of figure 3b (single run)*
+
+<img src="figures/figure_4.png" alt="fig2b" width="500" position/>
+
+*Reproduction of figure 4 (single run)*
