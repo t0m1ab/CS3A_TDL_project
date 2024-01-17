@@ -197,7 +197,7 @@ class MLP(nn.Module):
         "tanh": nn.Tanh,
     }
 
-    INIT_METHODS = ["xavier", "normal"]
+    INIT_METHODS = ["xavier", "normal", "orthogonal"]
 
     def __init__(
             self, 
@@ -209,6 +209,7 @@ class MLP(nn.Module):
             bias: bool = False, 
             act: str = None,
             init_method: str = None,
+            init_batch: torch.Tensor = None,
             device: str = None,
         ):
         """ 
@@ -223,6 +224,7 @@ class MLP(nn.Module):
             - bias: if true then add bias to linear layers
             - act: act function in [None, "relu", "sigmoid", "tanh"]
             - init_method: weight initialization method in MLP.INIT_METHODS
+            - init_batch: batch of vectors to use for weight initialization if method is "orthogonal"
             - device: device to use for computations in ["cpu", "mps", "cuda"]
         """
         super(MLP, self).__init__()
@@ -238,10 +240,8 @@ class MLP(nn.Module):
         self.bn = bn
         self.bias = bias
         self.act = None
-        if act is not None:
-            act = act.lower()
-            self.act = act if act in self.ACTIVATIONS else None
-        self.init_method = init_method if init_method in MLP.INIT_METHODS else MLP.INIT_METHODS[0]
+        if (act is not None) and (act.lower() in MLP.ACTIVATIONS):
+            self.act = act.lower()
         device = "cpu" if (device is None) or (not device in ["cpu", "mps", "cuda"]) else device
         if device == "mps":
             if not torch.backends.mps.is_available():
@@ -253,15 +253,13 @@ class MLP(nn.Module):
 
         # define linear layers: input_dim -> hidden_dim -> ...[l times]... -> hidden_dim -> output_dim
         self.flatten = nn.Flatten()
-        self.input_layer = nn.Linear(self.input_dim, self.d, bias=self.bias, device=self.device)
+        self.input_layer = None
+        if self.input_dim != self.d:
+            self.input_layer = nn.Linear(self.input_dim, self.d, bias=self.bias, device=self.device)
         self.hidden_layers = nn.ModuleList([nn.Linear(self.d, self.d, bias=self.bias, device=self.device) for _ in range(self.l)])
-        self.output_layer = nn.Linear(self.d, self.output_dim, bias=self.bias, device=self.device)
-
-        # init layers weights
-        self.__init_layer(self.input_layer.weight)
-        self.__init_layer(self.output_layer.weight)
-        for layer in self.hidden_layers: # init with i.i.d gaussian weights 
-            self.__init_layer(layer.weight)
+        self.output_layer = None
+        if self.output_dim != self.d:
+            self.output_layer = nn.Linear(self.d, self.output_dim, bias=self.bias, device=self.device)
 
         # only applied after hidden layers
         self.activations = nn.ModuleList([self.ACTIVATIONS[self.act]() for _ in range(l)]) if self.act is not None else None
@@ -269,21 +267,74 @@ class MLP(nn.Module):
         # only applied after hidden layers
         self.bn_layers = nn.ModuleList([BN(self.d, device=self.device) for _ in range(self.l)])
 
-        self.data = defaultdict(list)
+        # init layers weights
+        self.init_method = self.__init_layers(init_method, init_batch)
     
     def print_infos(self):
-        print(f"### MLP[d={self.d}, l={self.l}, bn={self.bn}, bias={self.bias}, act={self.act}]")
+        print(f"### MLP[d={self.d}, l={self.l}, bn={self.bn}, bias={self.bias}, act={self.act}, init={self.init_method}] ###")
         for idx, (name, layer) in enumerate(self.named_parameters()):
             print(f"{idx} - {name} | shape = {tuple(layer.size())}")
         print("")
     
-    def __init_layer(self, weight: nn.Module):
-        if self.init_method == "normal":
+    def __init_layer(self, weight: nn.Module, method: str):
+        if method == "normal":
             torch.nn.init.normal_(weight, mean=0, std=1.0/np.sqrt(self.d))
-        elif self.init_method == "xavier":
+        elif method == "xavier":
             torch.nn.init.xavier_uniform_(weight, gain=torch.nn.init.calculate_gain("relu"))
         else:
-            print(f"WARNING: init method '{self.init_method}' not recognized, no specific initialization was performed...")
+            print(f"WARNING: init method '{method}' not recognized, no specific initialization was performed...")
+
+    def __init_layers(self, init_method, init_batch):
+        """ Initliaze the layers weights according to init_method. """
+
+        init_method = init_method if init_method in MLP.INIT_METHODS else "xavier"
+        
+        if init_method != "orthogonal": # no iterative process required
+            if self.input_layer is not None:
+                self.__init_layer(self.input_layer.weight, method=init_method)
+            if self.output_layer is not None:
+                self.__init_layer(self.output_layer.weight, method=init_method)
+            for layer in self.hidden_layers:
+                self.__init_layer(layer.weight, method=init_method)
+        
+        else: # iterative orthogonalization process
+
+            if init_batch is None:
+                raise ValueError("init_batch must be provided when init_method is 'orthogonal'")
+
+            # init input and output layers using xavier
+            if self.input_layer is not None:
+                self.__init_layer(self.input_layer.weight, method="xavier")
+            if self.output_layer is not None:
+                self.__init_layer(self.output_layer.weight, method="xavier")
+            
+            x = self.flatten(init_batch)
+            
+            if self.input_layer is not None:
+                x = self.input_layer(x)
+
+            for layer_idx in range(self.l):
+
+                # init the layer using the incoming representations of the batch
+                with torch.no_grad():
+                    v, sigma, ut = torch.svd(x) # not implemented for MPS as of January 17th 2024 so will run on CPU
+                    left = v[:self.d,:self.d]
+                    inverse_sqrt_sigma = torch.diag(torch.pow(sigma[:self.d], -0.5))
+                    right = ut[:self.d,:self.d]
+                    orth_weights = left.mm(inverse_sqrt_sigma).mm(right)
+                    self.hidden_layers[layer_idx].weight.data = orth_weights
+                    norm_factor = torch.norm(self.hidden_layers[layer_idx](x))
+                    self.hidden_layers[layer_idx].weight.data = orth_weights / norm_factor
+
+                # forward through the layer (+ activation + batch norm if required)
+                x = self.hidden_layers[layer_idx](x)
+                x = self.activations[layer_idx](x) if self.act is not None else x
+                x = self.bn_layers[layer_idx](x) / np.sqrt(self.d) if self.bn else x
+            
+            if self.output_layer is not None:
+                x = self.output_layer(x)
+
+        return init_method
 
     def __cosine_similarity(self, x: torch.Tensor) -> float:
         """
@@ -349,7 +400,7 @@ class MLP(nn.Module):
         x = self.flatten(x)
         
         # input layer
-        if self.input_dim != self.d:
+        if self.input_layer is not None:
             x = self.input_layer(x)
 
         if return_data and self.__layer_check(0, self.l, select_layers):
@@ -380,7 +431,7 @@ class MLP(nn.Module):
                 )
         
         # output layer
-        if self.output_dim != self.d:
+        if self.output_layer is not None:
             x = self.output_layer(x)
         
         return x, data
@@ -435,8 +486,6 @@ def plots_figure_1(n_runs: int = 20, device: str = None):
     eps = 0.001
 
     device = "cpu" if (device is None) or (not device in ["cpu", "mps", "cuda"]) else device
-
-    print(device)
 
     data_cluster = []
 
