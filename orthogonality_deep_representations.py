@@ -14,7 +14,7 @@ COLORS = sns.color_palette()
 
 class Data():
     """
-    Data structure to store data from multiple forward passes of a single MLP with fixed length and width.
+    Data structure to store data from multiple forward pass of a single MLP with fixed length and width.
     """
 
     def __init__(self, d: int = None, l: int = None, save_dir: str = None):
@@ -81,6 +81,7 @@ class Data():
         Path(save_dir).mkdir(parents=True, exist_ok=True)
         filename = os.path.join(save_dir, "figure_1.png")
         plot.get_figure().savefig(filename, format="png", dpi=300)
+        plt.close()
     
     def plot_orth_gap_accross_layers(
             self, 
@@ -127,7 +128,8 @@ class Data():
         save_dir = save_dir if save_dir is not None else self.save_dir
         Path(save_dir).mkdir(parents=True, exist_ok=True)
         filename = os.path.join(save_dir, "figure_2a.png" if filename is None else filename)
-        plot.get_figure().savefig(filename, format="png", dpi=300)   
+        plot.get_figure().savefig(filename, format="png", dpi=300)
+        plt.close()   
 
     def plot_orth_radius_vs_width(
             self, 
@@ -168,7 +170,8 @@ class Data():
         save_dir = save_dir if save_dir is not None else self.save_dir
         Path(save_dir).mkdir(parents=True, exist_ok=True)
         filename = os.path.join(save_dir, "figure_2b.png" if filename is None else filename)
-        plot.get_figure().savefig(filename, format="png", dpi=300)   
+        plot.get_figure().savefig(filename, format="png", dpi=300)
+        plt.close() 
 
 
 class BN(nn.Module):
@@ -181,20 +184,30 @@ class BN(nn.Module):
         self.input_dim = input_dim
         self.device = device if device is not None else "cpu"
 
-    def forward(self, x):
+    def forward(self, x, eps: float = 1e-6):
         """ x is equal to M.T defined in the article, be careful... """
-        u = torch.diag(x.t() @ x).reshape(-1, 1) + 1e-6 # add 1e-6 to avoid division by 0
+        u = torch.diag(x.t() @ x).reshape(-1, 1) + eps # add 1e-6 to avoid future possible division by 0
         diag = torch.eye(self.input_dim, device=self.device) * torch.pow(u, -0.5)
         return x @ diag.t()
 
 
-class sin_act(nn.Module):
+class SinActivation(nn.Module):
 
     def __init__(self):
         super().__init__()
 
     def forward(self, x):
         return torch.sin(x)
+
+
+class PaperSigmoidActivation(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        self.tanh = nn.Tanh()
+
+    def forward(self, x):
+        return 1 + self.tanh(x)
 
 
 class MLP(nn.Module):
@@ -204,8 +217,9 @@ class MLP(nn.Module):
     ACTIVATIONS = {
         "relu": nn.ReLU,
         "sigmoid": nn.Sigmoid,
+        "paper_sigmoid": PaperSigmoidActivation,
         "tanh": nn.Tanh,
-        "sin": sin_act,
+        "sin": SinActivation,
     }
 
     INIT_METHODS = ["xavier", "normal", "orthogonal"]
@@ -225,8 +239,6 @@ class MLP(nn.Module):
         ):
         """ 
         ARGUMENTS:
-            - in_dim: input dimension
-            - out_dim: output dimension
             - d: input dimension = hidden dimension = output dimension
             - l: number layers
             - in_dim: input dimension of the network (set to d if None)
@@ -394,7 +406,7 @@ class MLP(nn.Module):
             bn: batch normalization
             return_similarity: if True then record and return the cosine similarity between the first pair of sample in the batch x at each layer matching select_layers
             return_orth_gap: if True then record and return the orthogonality gap at each layer matching select_layers
-            select_layers: one of MLP.LAYERS_SELECTION
+            select_layers: one element of MLP.LAYERS_SELECTION
         """
 
         if bn is None:
@@ -450,11 +462,10 @@ class MLP(nn.Module):
 
 def create_orth_vectors(d: int, n: int, device: str = None) -> torch.Tensor:
     """
+    Create and return n orthogonal vectors of dimension d.
     ARGUMENTS:
         d: dimension of the vectors
         n: number of vectors to return
-    RETURNS:
-        torch.Tensor of shape (n, d) containing n orthogonal vectors of dimension d
     """
     if n > d:
         raise ValueError(f"n={n} must be smaller than d={d}")
@@ -469,12 +480,11 @@ def create_orth_vectors(d: int, n: int, device: str = None) -> torch.Tensor:
 
 def create_correlated_vectors(d: int, n: int, eps: float = 0.001, device: str = None) -> torch.Tensor:
     """
+    Create and return n correlated vectors of dimension d.
     ARGUMENTS:
         d: dimension of the vectors
         n: number of vectors to return
         eps: level of correlation between the vectors
-    RETURNS:
-        torch.Tensor of shape (n, d) containing n correlated vectors of dimension d
     """
     if n > d:
         raise ValueError(f"n={n} must be smaller than d={d}")
@@ -574,7 +584,7 @@ def plots_figure_2b(n_runs: int = 20, act: str = None, device: str = None):
 
             mlp = MLP(d=d, l=l, act=act, device=device)
 
-            xBN = create_correlated_vectors(d=d, n=batch_size, eps=0.001, device=device)
+            xBN = torch.randn((batch_size, d), device=device)
             data_dicts.append(mlp(xBN, return_orth_gap=True, bn=True)[1].to_dict())
         
         # compute log average of orthogonality gap accross layers and the slope wrt log width
@@ -594,9 +604,13 @@ def plots_figure_2b(n_runs: int = 20, act: str = None, device: str = None):
 if __name__ == "__main__":
 
     DEVICE = "cpu"
+
     plots_figure_1(device=DEVICE)
+
     plots_figure_2a(device=DEVICE)
+
     plots_figure_2b(device=DEVICE)
+
     plots_figure_2b(device=DEVICE, act="relu")
     plots_figure_2b(device=DEVICE, act="tanh")
     plots_figure_2b(device=DEVICE, act="sigmoid")

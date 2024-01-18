@@ -172,6 +172,7 @@ def train_MLP_CIFAR10(
         - batch_size: number of samples per batch
         - epochs: number of epochs
         - step_size: learning rate
+        - init_method: initialization method for the weights must be in MLP.INIT_METHODS
         - compute_orth_gap: if True, compute the orthogonality gap before training and after each epoch on the whole dataset
         - device: device to use for training in ["cpu", "cuda", "mps"]
         - plot_figures: if True, plot the loss curves
@@ -276,6 +277,7 @@ def train_MLP_CIFAR10(
 
 def plot_figure_3a(directories: list[str] = None, save_dir: str = None):
     """
+    Figure 3a: gap and loss vs. depth
     ARGUMENTS:
         - directories: list of directories where to find the training data json file for each MLP
         - save_dir: directory to save the figure
@@ -328,6 +330,7 @@ def plot_figure_3a(directories: list[str] = None, save_dir: str = None):
 
 def plot_figure_3b(filepath: str = None, save_dir: str = None):
     """
+    Figure 3b: gap and loss during training
     ARGUMENTS:
         - filepath: name of the json file containing the training data (loss + orthogonality_gap at each epoch)
         - save_dir: directory to save the figure
@@ -379,6 +382,7 @@ def plot_figure_4(
         save_dir: str = None,
     ):
     """
+    Figure 4: final loss vs. depth when using xavier or orthogonal initialization
     ARGUMENTS:
         - directories_1: list of directories where to find the training data json file for each MLP of type 1
         - directories_2: list of directories where to find the training data json file for each MLP of type 2
@@ -440,7 +444,7 @@ if __name__ == '__main__':
     DEVICE = "mps"
     depths = [15, 30, 45, 60, 75]
 
-    # # reproduce figure 3a
+    # # reproduce Figure 3a
     for depth in depths:
         train_MLP_CIFAR10(
             epochs=30, 
@@ -453,11 +457,11 @@ if __name__ == '__main__':
         save_dir="outputs/"
     )
 
-    # # reproduce figure 3b
+    # # reproduce Figure 3b
     train_MLP_CIFAR10(device=DEVICE, save_dir="outputs/training_figure_3b/")
     plot_figure_3b(filepath="outputs/training_figure_3b/training_data.json")
 
-    # reproduce figure 4
+    # reproduce Figure 4
     for depth in depths:
         train_MLP_CIFAR10(
             epochs=30, 
