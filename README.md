@@ -4,11 +4,19 @@ Implementation of most of the experiments described in paper: [Batch Normalizati
 
 The code is organized as follows:
 
-* `orthogonality_deep_representations.py` implements the experimentations presented in section 3 of the paper.
+* **orthogonality_deep_representations.py** implements the experimentations presented in section 3 of the paper.
 
-* `orthogonality_optimization.py` implements the experimentations presented in section 5 of the paper.
+* **orthogonality_optimization.py** implements the experimentations presented in section 5 of the paper.
 
-* `figures` contains the plots obtained after running the previous code and are presented below.
+* **figures** contains the plots obtained after running the previous code and are presented below.
+
+### Setup
+
+Run `pip install -r requirements.txt`
+
+When running **orthogonality_optimization.py** for the first time, the CIFAR10 dataset will be automatically downloaded and a `data/` directory will be created.
+
+Running **orthogonality_optimization.py** may take a long time if you don't have access to a GPU.
 
 ### Results
 

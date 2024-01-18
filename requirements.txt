@@ -2,4 +2,7 @@ numpy
 matplotlib
 seaborn
 torch
+torchvision
+scipy
+json
 tqdm
